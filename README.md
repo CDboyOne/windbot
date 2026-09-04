@@ -29,6 +29,7 @@ Contributor guidance for creating and modifying deck AIs is available in `AGENTS
 - `Hand`: For testing your deck, forces the bot's rock-paper-scissors choice: `1` for Scissors, `2` for Rock, or `3` for Paper. The default behavior is random for most deck AIs.
 - `Chat`: Set to `False` to disable bot chat. The default is `True`.
 - `Debug`: Set to `True` to print detailed card-movement logs. The default is `False`.
+- `RecordFile`: Path **without extension** for match records. Writes `RecordFile` + `.ymr`, and `RecordFile` + `.yrp` when the server sends `STOC_REPLAY`. The default is `replay`. Set to empty to disable recording.
 - `Config`: Loads additional options from a configuration file. Command-line options take precedence.
 - `DbPath`: Specifies the path to `cards.cdb`. The default is `cards.cdb`. The program also looks for `cards.cdb` in the parent directory of the working directory, which is the typical location for YGOPro.
 - `ServerMode` and `ServerPort`: Enable the HTTP server mode and set its port. The default port is `2399`.
@@ -41,7 +42,7 @@ Server mode exposes an HTTP endpoint that starts a bot for each valid request. E
 http://127.0.0.1:2399/?name=%E2%91%A8&deck=Blue-Eyes&host=127.0.0.1&port=7911&dialog=cirno.zh-CN
 ```
 
-Query parameter names are lowercase. Supported parameters are `name`, `deck`, `host`, `port`, `dialog`, `version`, `password`, `hand`, `debug`, and `chat`. The `name`, `host`, and `port` parameters are required. `deckfile` is not supported.
+Query parameter names are lowercase. Supported parameters are `name`, `deck`, `host`, `port`, `dialog`, `version`, `password`, `hand`, `debug`, `chat`, and `recordfile`. The `name`, `host`, and `port` parameters are required. `deckfile` is not supported.
 
 The HTTP listener binds to all interfaces. On Windows, run with sufficient privileges or reserve the URL for the selected port (using `2399` here):
 

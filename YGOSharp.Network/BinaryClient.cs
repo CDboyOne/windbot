@@ -11,6 +11,7 @@ namespace YGOSharp.Network
         public event Action Connected;
         public event Action<Exception> Disconnected;
         public event Action<BinaryReader> PacketReceived;
+        public event Action<byte[]> PacketSent;
 
         protected int MaxPacketLength = 0xFFFF;
         protected int HeaderSize = 2;
@@ -103,6 +104,7 @@ namespace YGOSharp.Network
             byte[] data = new byte[packet.Length + HeaderSize];
             Array.Copy(header, 0, data, 0, header.Length);
             Array.Copy(packet, 0, data, header.Length, packet.Length);
+            PacketSent?.Invoke(packet);
             _client.BeginSend(data);
         }
 

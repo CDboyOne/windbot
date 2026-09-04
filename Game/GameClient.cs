@@ -24,6 +24,8 @@ namespace WindBot.Game
         public int Hand;
         public bool Debug;
         public bool _chat;
+        public string RecordFile;
+        public MatchRecordWriter Recorder { get; private set; }
         private string _serverHost;
         private int _serverPort;
         private short _proVersion;
@@ -46,6 +48,7 @@ namespace WindBot.Game
             _serverPort = Info.Port;
             _roomInfo = Info.HostInfo;
             _proVersion = (short)Info.Version;
+            RecordFile = Info.RecordFile;
         }
 
         internal void SetDeckContext(string executorName)
@@ -73,6 +76,8 @@ namespace WindBot.Game
 
             Connection.Connected += OnConnected;
             Connection.PacketReceived += OnPacketReceived;
+            Connection.PacketSent += OnPacketSent;
+            OpenRecorder();
 
             IPAddress target_address;
             try
@@ -124,9 +129,54 @@ namespace WindBot.Game
             Connection.Send(CtosMessage.Surrender);
         }
 
+        public string SaveReplay(byte[] replayPayload)
+        {
+            if (Recorder == null)
+                return null;
+            string yrpPath = Recorder.SaveReplay(replayPayload);
+            Logger.WriteLine("YRP saved: " + yrpPath);
+            return yrpPath;
+        }
+
+        public void CloseRecorder()
+        {
+            if (Recorder == null)
+                return;
+            if (Recorder.Truncated)
+                Logger.WriteLine("YMR reached 8MB limit; later packets were not written.");
+            Logger.WriteLine("YMR saved: " + Recorder.YmrPath + " (" + Recorder.RecordCount + " records)");
+            Recorder.Dispose();
+            Recorder = null;
+        }
+
+        private void OpenRecorder()
+        {
+            if (string.IsNullOrWhiteSpace(RecordFile))
+                return;
+
+            RecordFile = Path.GetFullPath(RecordFile);
+            Recorder = MatchRecordWriter.Create(RecordFile, (ushort)_proVersion);
+            Logger.WriteLine("Recording: " + Recorder.YmrPath);
+        }
+
+        private void OnPacketSent(byte[] packet)
+        {
+            RecordPacket(MatchRecordWriter.DirectionCtos, packet);
+        }
+
         private void OnPacketReceived(BinaryReader reader)
         {
+            MemoryStream stream = reader.BaseStream as MemoryStream;
+            if (stream != null)
+                RecordPacket(MatchRecordWriter.DirectionStoc, stream.ToArray());
             _behavior.OnPacket(reader);
+        }
+
+        private void RecordPacket(byte direction, byte[] packet)
+        {
+            if (Recorder == null || packet == null || packet.Length == 0)
+                return;
+            Recorder.AppendPacket(direction, packet);
         }
     }
 }

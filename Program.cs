@@ -82,6 +82,7 @@ namespace WindBot
             Info.Hand = Config.GetInt("Hand", Info.Hand);
             Info.Debug = Config.GetBool("Debug", Info.Debug);
             Info.Chat = Config.GetBool("Chat", Info.Chat);
+            Info.RecordFile = Config.GetString("RecordFile", Info.RecordFile);
             Run(Info);
         }
 
@@ -127,6 +128,9 @@ namespace WindBot
                     string chat = queryParams.Get("chat");
                     if (chat != null)
                         Info.Chat = bool.Parse(chat);
+                    string recordFile = queryParams.Get("recordfile");
+                    if (recordFile != null)
+                        Info.RecordFile = recordFile;
 
                     if (Info.Name == null || Info.Host == null || port == null || deckfile != null)
                     {
@@ -205,6 +209,15 @@ namespace WindBot
             }
             finally
             {
+                try
+                {
+                    if (client != null)
+                        client.CloseRecorder();
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteErrorLine("Close recorder error", ex);
+                }
                 Logger.ClearContext();
             }
         }

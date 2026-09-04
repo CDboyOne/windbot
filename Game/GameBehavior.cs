@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using WindBot.Game.AI;
 using YGOSharp.Network;
@@ -306,22 +305,8 @@ namespace WindBot.Game
 
         private void OnReplay(BinaryReader packet)
         {
-            /*byte[] replay =*/ packet.ReadToEnd();
-
-            /*
-            const string directory = "Replays";
-            if (!Directory.Exists(directory))
-                Directory.CreateDirectory(directory);
-
-            string otherName = _room.Position == 0 ? _room.Names[1] : _room.Names[0];
-            string file = DateTime.Now.ToString("yyyy-MM-dd.HH-mm.") + otherName + ".yrp";
-            string fullname = Path.Combine(directory, file);
-
-            if (Regex.IsMatch(file, @"^[\w\-. ]+$"))
-                File.WriteAllBytes(fullname, replay);
-            */
-
-            //Connection.Close();
+            byte[] replay = packet.ReadToEnd();
+            Game.SaveReplay(replay);
         }
         
         private void OnDuelEnd(BinaryReader packet)
