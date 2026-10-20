@@ -36,7 +36,9 @@ Contributor guidance for creating and modifying deck AIs is available in `AGENTS
 
 ## Server mode
 
-Server mode exposes an HTTP endpoint that starts a bot for each valid request. Example:
+Server mode exposes an HTTP endpoint that starts a bot for each valid request. The response is sent **after that bot's duel ends** (the TCP connection to the YGOPro host closes). Invalid parameters still fail immediately (400/404). To start two bots in the same room, send both requests concurrently; waiting for the first response before the second request will stall the first bot in the lobby.
+
+Example:
 
 ```text
 http://127.0.0.1:2399/?name=%E2%91%A8&deck=Blue-Eyes&host=127.0.0.1&port=7911&dialog=cirno.zh-CN

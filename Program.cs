@@ -92,73 +92,26 @@ namespace WindBot
             {
                 MainServer.AuthenticationSchemes = AuthenticationSchemes.Anonymous;
                 MainServer.Prefixes.Add("http://+:" + ServerPort + "/");
+                try
+                {
+                    MainServer.TimeoutManager.IdleConnection = TimeSpan.FromHours(6);
+                    MainServer.TimeoutManager.RequestQueue = TimeSpan.FromHours(6);
+                    MainServer.TimeoutManager.HeaderWait = TimeSpan.FromMinutes(5);
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteErrorLine("Set HttpListener timeout failed", ex);
+                }
                 MainServer.Start();
                 Logger.WriteLine("WindBot server start successed.");
                 Logger.WriteLine("HTTP GET http://127.0.0.1:" + ServerPort + "/?name=WindBot&host=127.0.0.1&port=7911 to call the bot.");
+                Logger.WriteLine("The HTTP response is sent after the duel ends. Start multiple bots with concurrent requests.");
                 while (true)
                 {
                     try
                     {
-                    HttpListenerContext ctx = MainServer.GetContext();
-                    var queryParams = HttpUtility.ParseQueryString(ctx.Request.Url.Query);
-
-                    WindBotInfo Info = new WindBotInfo();
-                    Info.Name = queryParams.Get("name");
-                    Info.Deck = queryParams.Get("deck");
-                    Info.Host = queryParams.Get("host");
-                    string port = queryParams.Get("port");
-                    if (port != null)
-                        Info.Port = Int32.Parse(port);
-                    string deckfile = queryParams.Get("deckfile"); // Obsoleted
-                    string dialog = queryParams.Get("dialog");
-                    if (dialog != null)
-                        Info.Dialog = dialog;
-                    string version = queryParams.Get("version");
-                    if (version != null)
-                        Info.Version = Int16.Parse(version);
-                    string password = queryParams.Get("password");
-                    if (password != null)
-                        Info.HostInfo = password;
-                    string hand = queryParams.Get("hand");
-                    if (hand != null)
-                        Info.Hand = Int32.Parse(hand);
-                    string debug = queryParams.Get("debug");
-                    if (debug != null)
-                        Info.Debug= bool.Parse(debug);
-                    string chat = queryParams.Get("chat");
-                    if (chat != null)
-                        Info.Chat = bool.Parse(chat);
-                    string recordFile = queryParams.Get("recordfile");
-                    if (recordFile != null)
-                        Info.RecordFile = recordFile;
-
-                    if (Info.Name == null || Info.Host == null || port == null || deckfile != null)
-                    {
-                        ctx.Response.StatusCode = 400;
-                        ctx.Response.Close();
-                    }
-                    else if (Info.Deck != null && !DecksManager.HasDeck(Info.Deck))
-                    {
-                        ctx.Response.StatusCode = 404;
-                        ctx.Response.Close();
-                    }
-                    else
-                    {
-                        ctx.Response.StatusCode = 200;
-                        try
-                        {
-                            Thread workThread = new Thread(new ParameterizedThreadStart(Run));
-                            workThread.Start(Info);
-                        }
-                        catch (Exception ex)
-                        {
-                            if (Debugger.IsAttached)
-                                throw;
-                            Logger.WriteErrorLine("Start Thread Error", ex);
-                            ctx.Response.StatusCode = 500;
-                        }
-                        ctx.Response.Close();
-                    }
+                        HttpListenerContext ctx = MainServer.GetContext();
+                        ThreadPool.QueueUserWorkItem(_ => HandleHttpRequest(ctx));
                     }
                     catch (Exception ex)
                     {
@@ -166,6 +119,86 @@ namespace WindBot
                             throw;
                         Logger.WriteErrorLine("Parse Http Request Error", ex);
                     }
+                }
+            }
+        }
+
+        private static void HandleHttpRequest(HttpListenerContext ctx)
+        {
+            try
+            {
+                var queryParams = HttpUtility.ParseQueryString(ctx.Request.Url.Query);
+
+                WindBotInfo Info = new WindBotInfo();
+                Info.Name = queryParams.Get("name");
+                Info.Deck = queryParams.Get("deck");
+                Info.Host = queryParams.Get("host");
+                string port = queryParams.Get("port");
+                if (port != null)
+                    Info.Port = Int32.Parse(port);
+                string deckfile = queryParams.Get("deckfile"); // Obsoleted
+                string dialog = queryParams.Get("dialog");
+                if (dialog != null)
+                    Info.Dialog = dialog;
+                string version = queryParams.Get("version");
+                if (version != null)
+                    Info.Version = Int16.Parse(version);
+                string password = queryParams.Get("password");
+                if (password != null)
+                    Info.HostInfo = password;
+                string hand = queryParams.Get("hand");
+                if (hand != null)
+                    Info.Hand = Int32.Parse(hand);
+                string debug = queryParams.Get("debug");
+                if (debug != null)
+                    Info.Debug = bool.Parse(debug);
+                string chat = queryParams.Get("chat");
+                if (chat != null)
+                    Info.Chat = bool.Parse(chat);
+                string recordFile = queryParams.Get("recordfile");
+                if (recordFile != null)
+                    Info.RecordFile = recordFile;
+
+                if (Info.Name == null || Info.Host == null || port == null || deckfile != null)
+                {
+                    ctx.Response.StatusCode = 400;
+                    ctx.Response.Close();
+                    return;
+                }
+                if (Info.Deck != null && !DecksManager.HasDeck(Info.Deck))
+                {
+                    ctx.Response.StatusCode = 404;
+                    ctx.Response.Close();
+                    return;
+                }
+
+                try
+                {
+                    Run(Info);
+                    ctx.Response.StatusCode = 200;
+                }
+                catch (Exception ex)
+                {
+                    if (Debugger.IsAttached)
+                        throw;
+                    Logger.WriteErrorLine("Start Thread Error", ex);
+                    ctx.Response.StatusCode = 500;
+                }
+                ctx.Response.Close();
+            }
+            catch (Exception ex)
+            {
+                if (Debugger.IsAttached)
+                    throw;
+                Logger.WriteErrorLine("Parse Http Request Error", ex);
+                try
+                {
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.Close();
+                }
+                catch
+                {
+                    // already closed
                 }
             }
         }
