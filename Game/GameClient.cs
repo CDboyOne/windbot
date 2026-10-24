@@ -2,7 +2,6 @@
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Threading;
 using YGOSharp.Network;
 using YGOSharp.Network.Enums;
 using YGOSharp.Network.Utils;
@@ -11,12 +10,7 @@ namespace WindBot.Game
 {
     public class GameClient
     {
-        private static long _nextInstanceId;
-
         public YGOClient Connection { get; private set; }
-        public long InstanceId { get; private set; }
-        public string ExecutorName { get; private set; }
-        public string CurrentSTOCMessage { get; private set; }
         public string Username;
         public string Deck;
         public string DeckFile;
@@ -36,7 +30,6 @@ namespace WindBot.Game
 
         public GameClient(WindBotInfo Info)
         {
-            InstanceId = Interlocked.Increment(ref _nextInstanceId);
             Username = Info.Name;
             Deck = Info.Deck;
             DeckFile = Info.DeckFile;
@@ -51,58 +44,54 @@ namespace WindBot.Game
             RecordFile = Info.RecordFile;
         }
 
-        internal void SetDeckContext(string executorName)
-        {
-            ExecutorName = executorName;
-        }
-
-        internal void SetCurrentSTOCMessage(string message)
-        {
-            CurrentSTOCMessage = message;
-        }
-
-        public string GetLogContext()
-        {
-            return "Instance=" + InstanceId
-                + ", Bot=" + (Username ?? "<null>")
-                + ", Executor=" + (ExecutorName ?? "<not initialized>")
-                + ", STOCMessage=" + (CurrentSTOCMessage ?? "<none>");
-        }
-
         public void Start()
         {
+            Logger.WriteLine(Lobby("connecting host=" + _serverHost + ":" + _serverPort
+                + " version=0x" + ((ushort)_proVersion).ToString("X4")
+                + " room=\"" + (_roomInfo ?? "") + "\""
+                + " deck=" + (Deck ?? "<default>")
+                + " deckFile=" + (DeckFile ?? "<executor>")
+                + " hand=" + Hand
+                + " chat=" + _chat));
+
             Connection = new YGOClient();
             _behavior = new GameBehavior(this);
 
             Connection.Connected += OnConnected;
+            Connection.Disconnected += OnDisconnected;
             Connection.PacketReceived += OnPacketReceived;
             Connection.PacketSent += OnPacketSent;
             OpenRecorder();
 
-            IPAddress target_address;
-            try
+            IPAddress targetAddress;
+            if (!IPAddress.TryParse(_serverHost, out targetAddress))
             {
-                target_address = IPAddress.Parse(_serverHost);
-            }
-            catch (System.Exception)
-            {
-                IPHostEntry _hostEntry = Dns.GetHostEntry(_serverHost);
-                target_address = _hostEntry.AddressList.FirstOrDefault(findIPv4 => findIPv4.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                Logger.WriteLine(Lobby("resolving host " + _serverHost));
+                IPHostEntry hostEntry = Dns.GetHostEntry(_serverHost);
+                targetAddress = hostEntry.AddressList.FirstOrDefault(
+                    address => address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                if (targetAddress == null)
+                    throw new InvalidOperationException("No IPv4 address for host " + _serverHost);
             }
 
-            Connection.Connect(target_address, _serverPort);
+            Logger.WriteLine(Lobby("TCP connect requested " + targetAddress + ":" + _serverPort));
+            Connection.Connect(targetAddress, _serverPort);
         }
 
         private void OnConnected()
         {
+            Logger.WriteLine(Lobby("TCP connected, sending ExternalAddress / PlayerInfo / JoinGame"));
+
             BinaryWriter packet = GamePacketFactory.Create(CtosMessage.ExternalAddress);
             packet.Write((UInt32)0); // real_ip, is always 0 in normal client
             packet.WriteUnicodeAutoLength(_serverHost, 255);
             Connection.Send(packet);
+            Logger.WriteLine(Lobby("sent CTOS_EXTERNAL_ADDRESS hostname=" + _serverHost));
 
             packet = GamePacketFactory.Create(CtosMessage.PlayerInfo);
             packet.WriteUnicode(Username, 20);
             Connection.Send(packet);
+            Logger.WriteLine(Lobby("sent CTOS_PLAYER_INFO name=" + Username));
 
             byte[] junk = { 0xCC, 0xCC, 0x00, 0x00, 0x00, 0x00 };
             packet = GamePacketFactory.Create(CtosMessage.JoinGame);
@@ -110,6 +99,27 @@ namespace WindBot.Game
             packet.Write(junk);
             packet.WriteUnicode(_roomInfo, 20);
             Connection.Send(packet);
+            Logger.WriteLine(Lobby("sent CTOS_JOIN_GAME version=0x" + ((ushort)_proVersion).ToString("X4")
+                + " room=\"" + (_roomInfo ?? "") + "\""));
+        }
+
+        private void OnDisconnected(Exception error)
+        {
+            if (error == null)
+            {
+                Logger.WriteLine(Lobby("disconnected (local close)."));
+                return;
+            }
+
+            bool remoteClose = error is IOException && error.Message == "remote host closed the connection";
+            Logger.WriteLine(Lobby("disconnected: " + error.GetType().Name + ": " + error.Message));
+            if (!remoteClose)
+                Logger.WriteErrorLine(Lobby("disconnect error"), error);
+        }
+
+        private string Lobby(string message)
+        {
+            return (Username ?? "<null>") + " " + message;
         }
 
         public void Tick()

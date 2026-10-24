@@ -3,7 +3,7 @@
 ## 项目定位
 
 - WindBot 是面向 YGOPro/YGOSharp/SRVPro 协议的 C# 决斗机器人，本质上是一个自动操作的 YGOPro 客户端。
-- 主程序基于 .NET Framework 4.8，解决方案支持 Any CPU 和 x86，当前默认平台与 CI 主验证平台为 Any CPU；项目是旧式非 SDK `.csproj`，不要默认使用仅适用于现代 .NET/SDK 项目的工具和 API。
+- 主程序基于 .NET 10（SDK 风格 `net10.0`）；`BotWrapper` 为 `net10.0-windows`。用 `dotnet build` / `dotnet publish` 构建；`cards.cdb` 通过 `Microsoft.Data.Sqlite` 读取。
 - 机器人只能使用服务器发给当前客户端的信息。对方手牌、牌组、盖卡等未公开信息通常只有数量或 `Id == 0` 的占位对象，不能读取、推断或硬编码其真实内容。
 - 服务器在要求客户端响应时已经给出了合法操作候选。牌组 AI 的职责主要是判断“现在是否值得这样做”以及“选哪个目标”，而不是复述发动条件。
 
@@ -11,8 +11,8 @@
 
 解决方案包含两个项目：
 
-- `WindBot.csproj`：控制台主程序，包含网络协议、客户端状态和全部决斗 AI；输出 `WindBot.exe`。
-- `BotWrapper/BotWrapper.csproj`：供 YGOPro 人机模式调用的轻量启动器，整理启动参数并启动 `WindBot.exe`；输出 `Bot.exe`。
+- `WindBot.csproj`：控制台主程序，包含网络协议、客户端状态和全部决斗 AI；输出 `WindBot` / `WindBot.exe`。
+- `BotWrapper/BotWrapper.csproj`：供 YGOPro 人机模式调用的轻量启动器（仅 Windows），整理启动参数并启动 `WindBot.exe`；输出 `Bot.exe`。
 
 主程序的调用链如下：
 
@@ -114,9 +114,8 @@ server 模式会为每个 HTTP 请求创建独立线程和独立的 `GameClient`
 
 - `[Deck]` 名称重复会在 `DecksManager.Init()` 初始化字典时失败。
 - 未指定牌组时，随机选择只接受 `Level == "Normal"` 的执行器；`Easy`、`NotFinished`、`Test` 不会进入普通随机池。
-- `Game/AI/Decks/*.cs`、`Game/AI/Enums/*.cs`、`Decks/*.ydk` 和 `Dialogs/*.json` 已由项目文件通配包含。
-- 旧式项目不会自动包含其他目录中的新 `.cs` 文件；在核心目录新增源码时必须同步检查 `WindBot.csproj` 的 `<Compile Include=...>`。
-- 卡片静态数据来自运行时 `cards.cdb`。不要仅为某张卡复制数据库字段到代码；卡号常量和确有必要的策略分类除外。
+- `Game/AI/Decks/*.cs`、`Game/AI/Enums/*.cs` 由 SDK 默认包含；`Decks/*.ydk` 和 `Dialogs/*.json` 会复制到输出目录。`BotWrapper/` 已从主工程排除。
+- 卡片静态数据来自运行时 `cards.cdb`（`Microsoft.Data.Sqlite`）。不要仅为某张卡复制数据库字段到代码；卡号常量和确有必要的策略分类除外。
 
 修改已有牌组时，先阅读它的构造函数注册顺序、相关覆盖回调和邻近的同类牌组实现。尽量做局部修改，避免顺手重排整个执行器列表或大范围统一旧代码风格。
 
@@ -130,30 +129,24 @@ server 模式会为每个 HTTP 请求创建独立线程和独立的 `GameClient`
 
 ## 构建与验证
 
-- CI 在 Windows 上使用 MSBuild 构建 `WindBot.sln` 的 Release 配置，未显式指定平台时使用项目默认的 Any CPU；Mono CI 也显式构建 Release Any CPU。本地对应命令为：
+- CI 使用 .NET 10 SDK：Windows 上 `dotnet publish` 主工程与 `BotWrapper`；Ubuntu 上对 `WindBot.csproj` 做 `linux-x64` self-contained publish。本地对应命令为：
 
   ```powershell
-  msbuild WindBot.sln /t:Build /p:Configuration=Release
+  dotnet build WindBot.sln -c Release
   ```
 
-- 这是旧式 .NET Framework 解决方案，优先使用 Visual Studio/MSBuild；不要把 `dotnet build` 当作默认验证方式。
 - 仓库目前没有自动化测试项目。不要声称“测试通过”来代替实际构建或对局验证。
 - 文档、对话或单纯 `.ydk` 修改通常无需编译。修改 C# 时按影响范围决定是否构建。
-- 协议、状态同步、选择队列和公共 AI 修改应至少做 Debug Any CPU 构建。
-- 运行 `WindBot.exe` 需要可访问的 `cards.cdb`；项目输出还依赖随仓库提供的 SQLite 组件以及复制到输出目录的 `Decks`/`Dialogs` 资源。
+- 协议、状态同步、选择队列和公共 AI 修改应至少做一次 `dotnet build`。
+- 运行需要可访问的 `cards.cdb`；`Decks`/`Dialogs` 会复制到输出目录。Linux 服务器部署用 `dotnet publish -r linux-x64 --self-contained true`。
 - 调试行为问题时可使用 `Debug=True` 查看移动日志，并记录触发消息、当前阶段、连锁、候选列表及最终命中的执行器。
 
 ## 代码与协作约定
 
 - 保持与现有代码一致的 C# 风格：4 空格缩进、Allman 大括号、清晰的显式控制流；不要为无关文件做批量格式化。
 - 代码文件的目标格式是 UTF-8 和 CRLF，但仓库中的历史文件尚未完全统一。新文件使用 UTF-8、CRLF，建议无 BOM；已有 BOM 不做无关调整。
-- 避免引入 .NET Framework 4.8 或当前编译方式不支持的 API/语法。
-- 为兼容项目支持的旧版 Mono 构建链，使用 C# 7 及以上语法时遵循以下限制：
-  - 已确认可用：对已经声明的变量或其他可赋值位置进行简单解构赋值，包括用 `(left, right) = (right, left);` 交换两个值。此用法不得把元组作为值保存、传递或返回。
-  - 已确认不可用：在类型声明、泛型参数、参数或返回值中使用元组类型及命名元组，例如 `Dictionary<(int zone, ClientCard[] cards), int>`；创建并保存元组值、访问命名元组元素，以及使用 `var (left, right) = value;` 等解构声明。
-  - 已确认不可用：局部函数，包括普通、表达式体和递归局部函数；应改为类级方法，或在确有必要时使用 C# 6 支持的委托和 lambda。
-  - 已确认不可用：`default` 字面量；应写成 `default(T)` 等显式形式。
-  - 其他未经旧版 Mono 构建验证、且只是语法糖的 C# 7 及以上语法默认避免使用，例如模式匹配、内联 `out` 变量、弃元和 throw 表达式；优先使用清晰的 C# 6 等价写法。
+- 可使用 .NET 10 / 现代 C# 语法，但牌组 AI 与协议层仍优先与周围代码风格一致，避免无关的大范围现代化。
+- 不要启用 `PublishTrimmed` / NativeAOT：`[Deck]` 执行器靠反射发现，裁剪会丢掉牌组。
 - Linq可以积极使用，空条件运算符（`?.`）和空合并运算符（`??`）也可以使用。
 - 不要提取只在单个函数中调用一次、且没有明显复用价值的小函数。
 - 注释可以复述超过 30 行的单个函数的整体行为。

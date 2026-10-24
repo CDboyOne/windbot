@@ -4,8 +4,15 @@ WindBot is a C# duel bot for [YGOPro](https://github.com/Fluorohydride/ygopro). 
 
 ## Usage
 
-1. Build `WindBot.sln` with Visual Studio/MSBuild or Mono.
-2. Place `cards.cdb` next to the compiled `WindBot.exe`.
+1. Build with the .NET 10 SDK:
+   ```text
+   dotnet build WindBot.sln -c Release
+   ```
+   Or run directly:
+   ```text
+   dotnet run --project WindBot.csproj -- Name=WindBot Deck=Blue-Eyes Host=127.0.0.1 Port=7911
+   ```
+2. Place `cards.cdb` next to the compiled `WindBot` / `WindBot.exe` (or pass `DbPath=`).
 3. Start a YGOPro host.
 4. Run WindBot with options in `Key=Value` format, for example:
    ```text
@@ -13,6 +20,8 @@ WindBot is a C# duel bot for [YGOPro](https://github.com/Fluorohydride/ygopro). 
    ```
 5. The bot will connect to the host and start dueling.
 6. Refer to `BotWrapper/bot.conf` or the `[Deck]` declarations of each file in `Game/AI/Decks` for available decks.
+
+`BotWrapper` targets `net10.0-windows` (YGOPro's built-in bot launcher). Linux server deployments only need the `WindBot` project (`dotnet publish -r linux-x64 --self-contained true`).
 
 Contributor guidance for creating and modifying deck AIs is available in `AGENTS.md`.
 

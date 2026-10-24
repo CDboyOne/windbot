@@ -11,26 +11,22 @@ jobs:
   build:
     runs-on: windows-2022
 
-    env:
-      Solution_Name: WindBot.sln
-
     steps:
     - name: Checkout
       uses: actions/checkout@v6
 
-    - name: Setup MSBuild.exe
-      uses: microsoft/setup-msbuild@v3
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: "10.0.x"
 
-    - name: Build!
-      run: msbuild $env:Solution_Name /t:Build /p:Configuration=Release
+    - name: Publish
+      run: |
+        dotnet publish WindBot.csproj -c Release -o dist/WindBot
+        dotnet publish BotWrapper/BotWrapper.csproj -c Release -o dist
 
     - name: Pack
       run: |
-        mkdir dist
-        xcopy /e /y bin\Release dist\WindBot\
-        xcopy /y BotWrapper\bin\Release\bot.conf dist\
-        xcopy /y BotWrapper\bin\Release\load-once.conf dist\
-        xcopy /y BotWrapper\bin\Release\bot.exe dist\
         cd dist
         7z a WindBot.7z *
         cd ..
@@ -51,38 +47,25 @@ jobs:
         files: |
           dist/WindBot.7z
 
-  mono-build:
+  linux-build:
     runs-on: ubuntu-latest
-    container:
-      image: mono:6.8.0.123
-
-    env:
-      Solution_Name: WindBot.sln
 
     steps:
     - name: Checkout
       uses: actions/checkout@v6
 
-    - name: Build with Mono MSBuild
-      run: msbuild "$Solution_Name" /t:Build /p:Configuration=Release /p:Platform="Any CPU"
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: "10.0.x"
 
-    - name: Fix sqlite dll location
-      # Old MSBuild don't process the TargetPath correctly. https://github.com/dotnet/msbuild/pull/6237
-      # This is fixed in 16.10 that ships with latest mono.
+    - name: Publish linux-x64 self-contained
       run: |
-        for arch in x86 x64; do
-          source_path="bin/Release/ThirdParty/sqlite/$arch/sqlite3.dll"
-          target_dir="bin/Release/$arch"
-          if [ -f "$source_path" ]; then
-            mkdir -p "$target_dir"
-            mv -f "$source_path" "$target_dir/sqlite3.dll"
-            echo "Moved $source_path to $target_dir/sqlite3.dll"
-          fi
-        done
+        dotnet publish WindBot.csproj -c Release -r linux-x64 --self-contained true -o dist/linux-x64
 
-    - name: Upload Mono build artifacts
+    - name: Upload Linux build artifacts
       uses: actions/upload-artifact@v6
       with:
-        name: WindBot-mono
-        path: bin/Release/
+        name: WindBot-linux-x64
+        path: dist/linux-x64/
         if-no-files-found: error

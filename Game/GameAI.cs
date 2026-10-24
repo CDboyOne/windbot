@@ -54,6 +54,7 @@ namespace WindBot.Game
 
         public void OnDeckError(string card)
         {
+            Logger.WriteLine(Game.Username + " deck rejected (" + card + "), closing in 1s.");
             _dialogs.SendDeckSorry(card);
             Thread.Sleep(1000);
             _dialogs.SendSurrender();

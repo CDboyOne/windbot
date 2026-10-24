@@ -21,7 +21,7 @@ namespace BotWrapper
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.UseShellExecute = false;
             startInfo.WorkingDirectory = Path.GetFullPath("WindBot");
-            startInfo.FileName = startInfo.WorkingDirectory + "\\WindBot.exe";
+            startInfo.FileName = Path.Combine(startInfo.WorkingDirectory, "WindBot.exe");
 
             if (args.Length == 3)
             {

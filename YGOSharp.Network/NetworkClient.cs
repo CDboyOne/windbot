@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 
@@ -126,7 +127,7 @@ namespace YGOSharp.Network
                 int bytesSent = _socket.EndSend(result);
                 if (bytesSent != (int)result.AsyncState)
                 {
-                    Close();
+                    Close(new IOException("incomplete send: " + bytesSent + "/" + (int)result.AsyncState));
                 }
             }
             catch (Exception ex)
@@ -149,7 +150,7 @@ namespace YGOSharp.Network
             }
             if (bytesRead == 0)
             {
-                Close();
+                Close(new IOException("remote host closed the connection"));
                 return;
             }
             byte[] data = new byte[bytesRead];

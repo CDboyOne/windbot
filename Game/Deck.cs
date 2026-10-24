@@ -18,16 +18,17 @@ namespace WindBot.Game
             SideCards = new List<NamedCard>();
         }
 
-        private void AddNewCard(int cardId, bool sideDeck)
+        private bool AddNewCard(int cardId, bool sideDeck)
         {
             NamedCard newCard = NamedCard.Get(cardId);
             if (newCard == null)
-                return;
+                return false;
 
             if (!sideDeck)
                 AddCard(newCard);
             else
                 SideCards.Add(newCard);
+            return true;
         }
 
         private void AddCard(NamedCard card)
@@ -67,23 +68,29 @@ namespace WindBot.Game
                     if (!int.TryParse(line, out id))
                         continue;
 
-                    deck.AddNewCard(id, side);
+                    if (!deck.AddNewCard(id, side))
+                        Logger.WriteLine("Deck \"" + name + "\" skipped unknown card id " + id + (side ? " (side)" : ""));
                 }
 
+                string path = name;
+                if (reader.BaseStream is FileStream file)
+                    path = file.Name;
                 reader.Close();
 
-                if (deck.Cards.Count > 60)
+                if (deck.Cards.Count > 60 || deck.ExtraCards.Count > 15 || deck.SideCards.Count > 15)
+                {
+                    Logger.WriteErrorLine("Deck \"" + path + "\" exceeds the client limit: main="
+                        + deck.Cards.Count + " extra=" + deck.ExtraCards.Count
+                        + " side=" + deck.SideCards.Count + ".", null);
                     return null;
-                if (deck.ExtraCards.Count > 15)
-                    return null;
-                if (deck.SideCards.Count > 15)
-                    return null;
+                }
 
                 return deck;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 reader?.Close();
+                Logger.WriteErrorLine("Failed to load deck \"" + name + "\".", ex);
                 return null;
             }
         }

@@ -1,9 +1,10 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Net;
-using System.Web;
 using System.Diagnostics;
+using Serilog.Context;
 using WindBot.Game;
 using WindBot.Game.AI;
 using YGOSharp.OCGWrapper;
@@ -17,6 +18,7 @@ namespace WindBot
 
         internal static void Main(string[] args)
         {
+            Logger.Initialize();
             Logger.WriteLine("WindBot starting...");
 
             Config.Load(args);
@@ -95,8 +97,11 @@ namespace WindBot
                 try
                 {
                     MainServer.TimeoutManager.IdleConnection = TimeSpan.FromHours(6);
-                    MainServer.TimeoutManager.RequestQueue = TimeSpan.FromHours(6);
-                    MainServer.TimeoutManager.HeaderWait = TimeSpan.FromMinutes(5);
+                    if (OperatingSystem.IsWindows())
+                    {
+                        MainServer.TimeoutManager.RequestQueue = TimeSpan.FromHours(6);
+                        MainServer.TimeoutManager.HeaderWait = TimeSpan.FromMinutes(5);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -105,13 +110,19 @@ namespace WindBot
                 MainServer.Start();
                 Logger.WriteLine("WindBot server start successed.");
                 Logger.WriteLine("HTTP GET http://127.0.0.1:" + ServerPort + "/?name=WindBot&host=127.0.0.1&port=7911 to call the bot.");
-                Logger.WriteLine("The HTTP response is sent after the duel ends. Start multiple bots with concurrent requests.");
+                Logger.WriteLine("The HTTP response is sent after the duel ends. Each request runs on a dedicated thread (not ThreadPool).");
                 while (true)
                 {
                     try
                     {
                         HttpListenerContext ctx = MainServer.GetContext();
-                        ThreadPool.QueueUserWorkItem(_ => HandleHttpRequest(ctx));
+                        // Dedicated thread per duel: ThreadPool workers stuck in Tick/Sleep would
+                        // delay Socket ConnectCallback and miss srvpro's 2s pre-join idle timeout.
+                        Thread thread = new Thread(() => HandleHttpRequest(ctx))
+                        {
+                            IsBackground = true,
+                        };
+                        thread.Start();
                     }
                     catch (Exception ex)
                     {
@@ -123,53 +134,99 @@ namespace WindBot
             }
         }
 
+        private static Dictionary<string, string> ParseQueryString(string query)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(query))
+                return result;
+            string q = query[0] == '?' ? query.Substring(1) : query;
+            foreach (string part in q.Split('&'))
+            {
+                if (part.Length == 0)
+                    continue;
+                int eq = part.IndexOf('=');
+                string key;
+                string value;
+                if (eq < 0)
+                {
+                    key = Uri.UnescapeDataString(part.Replace('+', ' '));
+                    value = string.Empty;
+                }
+                else
+                {
+                    key = Uri.UnescapeDataString(part.Substring(0, eq).Replace('+', ' '));
+                    value = Uri.UnescapeDataString(part.Substring(eq + 1).Replace('+', ' '));
+                }
+                result[key] = value;
+            }
+            return result;
+        }
+
+        private static string GetQuery(Dictionary<string, string> queryParams, string key)
+        {
+            string value;
+            return queryParams.TryGetValue(key, out value) ? value : null;
+        }
+
         private static void HandleHttpRequest(HttpListenerContext ctx)
         {
             try
             {
-                var queryParams = HttpUtility.ParseQueryString(ctx.Request.Url.Query);
+                Logger.WriteLine("HTTP bot request " + ctx.Request.RawUrl);
+                var queryParams = ParseQueryString(ctx.Request.Url.Query);
 
                 WindBotInfo Info = new WindBotInfo();
-                Info.Name = queryParams.Get("name");
-                Info.Deck = queryParams.Get("deck");
-                Info.Host = queryParams.Get("host");
-                string port = queryParams.Get("port");
+                Info.Name = GetQuery(queryParams, "name");
+                Info.Deck = GetQuery(queryParams, "deck");
+                Info.Host = GetQuery(queryParams, "host");
+                string port = GetQuery(queryParams, "port");
                 if (port != null)
                     Info.Port = Int32.Parse(port);
-                string deckfile = queryParams.Get("deckfile"); // Obsoleted
-                string dialog = queryParams.Get("dialog");
+                string deckfile = GetQuery(queryParams, "deckfile"); // Obsoleted
+                string dialog = GetQuery(queryParams, "dialog");
                 if (dialog != null)
                     Info.Dialog = dialog;
-                string version = queryParams.Get("version");
+                string version = GetQuery(queryParams, "version");
                 if (version != null)
                     Info.Version = Int16.Parse(version);
-                string password = queryParams.Get("password");
+                string password = GetQuery(queryParams, "password");
                 if (password != null)
                     Info.HostInfo = password;
-                string hand = queryParams.Get("hand");
+                string hand = GetQuery(queryParams, "hand");
                 if (hand != null)
                     Info.Hand = Int32.Parse(hand);
-                string debug = queryParams.Get("debug");
+                string debug = GetQuery(queryParams, "debug");
                 if (debug != null)
                     Info.Debug = bool.Parse(debug);
-                string chat = queryParams.Get("chat");
+                string chat = GetQuery(queryParams, "chat");
                 if (chat != null)
                     Info.Chat = bool.Parse(chat);
-                string recordFile = queryParams.Get("recordfile");
+                string recordFile = GetQuery(queryParams, "recordfile");
                 if (recordFile != null)
                     Info.RecordFile = recordFile;
 
                 if (Info.Name == null || Info.Host == null || port == null || deckfile != null)
                 {
+                    Logger.WriteLine("HTTP bot request rejected (400): name, host, or port is missing, or obsolete deckfile is set.");
                     ctx.Response.StatusCode = 400;
                     ctx.Response.Close();
                     return;
                 }
                 if (Info.Deck != null && !DecksManager.HasDeck(Info.Deck))
                 {
+                    Logger.WriteLine("HTTP bot request rejected (404): unknown deck \"" + Info.Deck + "\".");
                     ctx.Response.StatusCode = 404;
                     ctx.Response.Close();
                     return;
+                }
+
+                try
+                {
+                    Thread.CurrentThread.Name = "WindBot-" + Info.Name;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Name can only be set once.
                 }
 
                 try
@@ -206,52 +263,54 @@ namespace WindBot
         private static void Run(object o)
         {
             // All errors should be caught instead of causing the program to crash.
-            GameClient client = null;
-            try
+            WindBotInfo Info = (WindBotInfo)o;
+            using (LogContext.PushProperty("name", Info.Name ?? "<null>"))
             {
-                WindBotInfo Info = (WindBotInfo)o;
-                client = new GameClient(Info);
-                Logger.SetContext(client.GetLogContext);
-                client.Start();
-                Logger.DebugWriteLine(client.Username + " started.");
-                while (client.Connection.IsConnected)
-                {
-                    try
-                    {
-                        client.Tick();
-                        #if DEBUG
-                            Thread.Sleep(1);
-                        #else
-                            Thread.Sleep(30);
-                        #endif
-                    }
-                    catch (Exception ex)
-                    {
-                        if (Debugger.IsAttached)
-                            throw;
-                        Logger.WriteErrorLine("Tick Error", ex);
-                    }
-                }
-                Logger.DebugWriteLine(client.Username + " end.");
-            }
-            catch (Exception ex)
-            {
-                if (Debugger.IsAttached)
-                    throw;
-                Logger.WriteErrorLine("Run Error", ex);
-            }
-            finally
-            {
+                GameClient client = null;
                 try
                 {
-                    if (client != null)
-                        client.CloseRecorder();
+                    Logger.WriteLine((Info.Name ?? "<null>") + " session starting.");
+                    client = new GameClient(Info);
+                    client.Start();
+                    while (client.Connection.IsConnected)
+                    {
+                        try
+                        {
+                            client.Tick();
+                            #if DEBUG
+                                Thread.Sleep(1);
+                            #else
+                                Thread.Sleep(30);
+                            #endif
+                        }
+                        catch (Exception ex)
+                        {
+                            if (Debugger.IsAttached)
+                                throw;
+                            Logger.WriteErrorLine("Tick Error", ex);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Logger.WriteErrorLine("Close recorder error", ex);
+                    if (Debugger.IsAttached)
+                        throw;
+                    Logger.WriteErrorLine("Run Error", ex);
                 }
-                Logger.ClearContext();
+                finally
+                {
+                    try
+                    {
+                        if (client != null)
+                            client.CloseRecorder();
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.WriteErrorLine("Close recorder error", ex);
+                    }
+                    if (client != null)
+                        Logger.WriteLine(client.Username + " session ended.");
+                }
             }
         }
 

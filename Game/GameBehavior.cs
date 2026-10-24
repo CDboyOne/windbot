@@ -28,6 +28,7 @@ namespace WindBot.Game
         private int _hand;
         private bool _debug;
         private bool _isTag;
+        private bool _duelStarted;
         private bool _botDeckActive;
         private bool _botDeckNeedsInitialHandSync;
         private bool _chatPlayerOrderSwapped;
@@ -49,8 +50,16 @@ namespace WindBot.Game
 
             _ai = new GameAI(Game, _duel);
             _ai.Executor = DecksManager.Instantiate(_ai, _duel);
-            Game.SetDeckContext(_ai.Executor.GetType().Name);
-            Deck = Deck.Load(Game.DeckFile ?? _ai.Executor.Deck);
+            string deckName = Game.DeckFile ?? _ai.Executor.Deck;
+            Deck = Deck.Load(deckName);
+            if (Deck == null)
+                Logger.WriteErrorLine(Lobby("deck failed to load: " + deckName), null);
+            else
+                Logger.WriteLine(Lobby("deck ready: " + deckName
+                    + " main=" + Deck.Cards.Count
+                    + " extra=" + Deck.ExtraCards.Count
+                    + " side=" + Deck.SideCards.Count
+                    + " executor=" + _ai.Executor.GetType().Name));
 
             _select_hint = 0;
         }
@@ -85,11 +94,9 @@ namespace WindBot.Game
         public void OnPacket(BinaryReader packet)
         {
             StocMessage id = (StocMessage)packet.ReadByte();
-            Game.SetCurrentSTOCMessage(id.ToString());
             if (id == StocMessage.GameMsg)
             {
                 GameMessage msg = (GameMessage)packet.ReadByte();
-                Game.SetCurrentSTOCMessage(msg.ToString());
                 if (_messages.ContainsKey(msg))
                     _messages[msg](packet);
                 _lastMessage = msg;
@@ -97,6 +104,8 @@ namespace WindBot.Game
             }
             if (_packets.ContainsKey(id))
                 _packets[id](packet);
+            else
+                Logger.WriteLine(Lobby("unhandled STOC " + id + " (0x" + ((byte)id).ToString("X2") + ")"));
         }
 
         private void RegisterPackets()
@@ -114,6 +123,13 @@ namespace WindBot.Game
             _packets.Add(StocMessage.ChangeSide, OnChangeSide);
             _packets.Add(StocMessage.ErrorMsg, OnErrorMsg);
             _packets.Add(StocMessage.TeammateSurrender, OnTeammateSurrender);
+            _packets.Add(StocMessage.HandResult, OnHandResult);
+            _packets.Add(StocMessage.TpResult, OnTpResult);
+            _packets.Add(StocMessage.WaitingSide, OnWaitingSide);
+            _packets.Add(StocMessage.CreateGame, OnCreateGame);
+            _packets.Add(StocMessage.LeaveGame, OnLeaveGame);
+            _packets.Add(StocMessage.DuelStart, OnDuelStart);
+            _packets.Add(StocMessage.HsWatchChange, OnWatchChange);
 
             _messages.Add(GameMessage.Retry, OnRetry);
             _messages.Add(GameMessage.Start, OnStart);
@@ -190,29 +206,51 @@ namespace WindBot.Game
 
         private void OnJoinGame(BinaryReader packet)
         {
-            /*int lflist = (int)*/ packet.ReadUInt32();
-            /*int rule = */ packet.ReadByte();
+            int lflist = (int)packet.ReadUInt32();
+            int rule = packet.ReadByte();
             int mode = packet.ReadByte();
-            int duel_rule = packet.ReadByte();
+            int duelRule = packet.ReadByte();
+            int noCheckDeck = packet.ReadByte();
+            int noShuffleDeck = packet.ReadByte();
+            packet.ReadBytes(3);
+            int startLp = packet.ReadInt32();
+            int startHand = packet.ReadByte();
+            int drawCount = packet.ReadByte();
+            int timeLimit = packet.ReadUInt16();
             _isTag = (mode == 2);
-            _ai.Duel.IsNewRule = (duel_rule >= 4);
-            _ai.Duel.IsNewRule2020 = (duel_rule >= 5);
-            BinaryWriter deck = GamePacketFactory.Create(CtosMessage.UpdateDeck);
-            deck.Write(Deck.Cards.Count + Deck.ExtraCards.Count);
-            deck.Write(Deck.SideCards.Count);
-            foreach (NamedCard card in Deck.Cards)
-                deck.Write(card.Id);
-            foreach (NamedCard card in Deck.ExtraCards)
-                deck.Write(card.Id);
-            foreach (NamedCard card in Deck.SideCards)
-                deck.Write(card.Id);
-            Connection.Send(deck);
+            _ai.Duel.IsNewRule = (duelRule >= 4);
+            _ai.Duel.IsNewRule2020 = (duelRule >= 5);
+            Logger.WriteLine(Lobby("STOC_JOIN_GAME lflist=" + lflist
+                + " rule=" + rule
+                + " mode=" + DescribeMode(mode)
+                + " duelRule=" + duelRule
+                + " noCheckDeck=" + noCheckDeck
+                + " noShuffleDeck=" + noShuffleDeck
+                + " lp=" + startLp
+                + " startHand=" + startHand
+                + " drawCount=" + drawCount
+                + " timeLimit=" + timeLimit));
+            SendUpdateDeck("join");
             _ai.OnJoinGame();
         }
 
         private void OnChangeSide(BinaryReader packet)
         {
             _chatPlayerOrderSwapped = false;
+            Logger.WriteLine(Lobby("STOC_CHANGE_SIDE"));
+            SendUpdateDeck("side");
+            _ai.OnJoinGame();
+        }
+
+        private void SendUpdateDeck(string reason)
+        {
+            if (Deck == null)
+                throw new InvalidOperationException(Lobby("cannot send CTOS_UPDATE_DECK (" + reason + "): deck was not loaded."));
+
+            Logger.WriteLine(Lobby("sending CTOS_UPDATE_DECK (" + reason + ")"
+                + " main=" + Deck.Cards.Count
+                + " extra=" + Deck.ExtraCards.Count
+                + " side=" + Deck.SideCards.Count));
             BinaryWriter deck = GamePacketFactory.Create(CtosMessage.UpdateDeck);
             deck.Write(Deck.Cards.Count + Deck.ExtraCards.Count);
             deck.Write(Deck.SideCards.Count);
@@ -223,21 +261,24 @@ namespace WindBot.Game
             foreach (NamedCard card in Deck.SideCards)
                 deck.Write(card.Id);
             Connection.Send(deck);
-            _ai.OnJoinGame();
         }
 
         private void OnTypeChange(BinaryReader packet)
         {
             int type = packet.ReadByte();
             int pos = type & 0xF;
+            bool isHost = ((type >> 4) & 0xF) != 0;
             if (pos < 0 || pos > 3)
             {
+                Logger.WriteLine(Lobby("STOC_TYPE_CHANGE type=0x" + type.ToString("X2")
+                    + " pos=" + pos + " host=" + isHost + " is not a duelist seat, closing."));
                 Connection.Close();
                 return;
             }
             _room.Position = pos;
-            _room.IsHost = ((type >> 4) & 0xF) != 0;
+            _room.IsHost = isHost;
             _room.IsReady[pos] = true;
+            Logger.WriteLine(Lobby("STOC_TYPE_CHANGE pos=" + pos + " host=" + isHost + ", sending CTOS_HS_READY"));
             Connection.Send(CtosMessage.HsReady);
         }
 
@@ -247,6 +288,7 @@ namespace WindBot.Game
             int pos = packet.ReadByte();
             if (pos < 8)
                 _room.Names[pos] = name;
+            Logger.WriteLine(Lobby("player enter pos=" + pos + " name=" + name));
         }
 
         private void OnPlayerChange(BinaryReader packet)
@@ -255,7 +297,11 @@ namespace WindBot.Game
             int pos = (change >> 4) & 0xF;
             int state = change & 0xF;
             if (pos > 3)
+            {
+                Logger.WriteLine(Lobby("player change ignored pos=" + pos + " state=" + DescribePlayerChange(state)));
                 return;
+            }
+            string previousName = _room.Names[pos];
             if (state < 8)
             {
                 string oldname = _room.Names[pos];
@@ -274,33 +320,227 @@ namespace WindBot.Game
                 _room.Names[pos] = null;
             }
 
+            Logger.WriteLine(Lobby("player change pos=" + pos
+                + " name=" + (previousName ?? "-")
+                + " state=" + DescribePlayerChange(state)
+                + " " + ReadySummary()));
+
             bool allPlayersReady = _room.IsReady[0] && _room.IsReady[1] &&
                 (!_isTag || (_room.IsReady[2] && _room.IsReady[3]));
             if (_room.IsHost && allPlayersReady)
+            {
+                Logger.WriteLine(Lobby("all required players ready, sending CTOS_HS_START"));
                 Connection.Send(CtosMessage.HsStart);
+            }
+            else if (_room.IsHost)
+                Logger.WriteLine(Lobby("host is waiting for the other players"));
         }
 
         private void OnSelectHand(BinaryReader packet)
         {
             int result;
+            string source;
             if (_hand > 0)
+            {
                 result = _hand;
+                source = "configured";
+            }
             else
+            {
                 result = _ai.OnRockPaperScissors();
+                source = "ai";
+            }
+            Logger.WriteLine(Lobby("STOC_SELECT_HAND -> CTOS_HAND_RESULT " + DescribeHand(result)
+                + " (" + result + ", " + source + ")"));
             Connection.Send(CtosMessage.HandResult, (byte)result);
         }
 
         private void OnSelectTp(BinaryReader packet)
         {
             bool start = _ai.OnSelectHand();
+            Logger.WriteLine(Lobby("STOC_SELECT_TP -> " + (start ? "go first" : "go second")));
             Connection.Send(CtosMessage.TpResult, (byte)(start ? 1 : 0));
+        }
+
+        private void OnHandResult(BinaryReader packet)
+        {
+            int res1 = packet.ReadByte();
+            int res2 = packet.ReadByte();
+            Logger.WriteLine(Lobby("STOC_HAND_RESULT p0=" + DescribeHand(res1) + " p1=" + DescribeHand(res2)));
+        }
+
+        private void OnTpResult(BinaryReader packet)
+        {
+            int remaining = (int)(packet.BaseStream.Length - packet.BaseStream.Position);
+            Logger.WriteLine(Lobby("STOC_TP_RESULT bytes=" + remaining));
+        }
+
+        private void OnWaitingSide(BinaryReader packet)
+        {
+            Logger.WriteLine(Lobby("STOC_WAITING_SIDE"));
+        }
+
+        private void OnCreateGame(BinaryReader packet)
+        {
+            string gameId = packet.BaseStream.Length - packet.BaseStream.Position >= 4
+                ? packet.ReadUInt32().ToString()
+                : "<none>";
+            Logger.WriteLine(Lobby("STOC_CREATE_GAME gameid=" + gameId));
+        }
+
+        private void OnLeaveGame(BinaryReader packet)
+        {
+            string pos = packet.BaseStream.Length - packet.BaseStream.Position >= 1
+                ? packet.ReadByte().ToString()
+                : "<none>";
+            Logger.WriteLine(Lobby("STOC_LEAVE_GAME pos=" + pos));
+        }
+
+        private void OnDuelStart(BinaryReader packet)
+        {
+            Logger.WriteLine(Lobby("STOC_DUEL_START"));
+        }
+
+        private void OnWatchChange(BinaryReader packet)
+        {
+            int count = packet.ReadUInt16();
+            Logger.WriteLine(Lobby("spectator count=" + count));
         }
 
         private void OnTimeLimit(BinaryReader packet)
         {
-            int player = GetLocalPlayer(packet.ReadByte());
+            int rawPlayer = packet.ReadByte();
+            int player = GetLocalPlayer(rawPlayer);
+            int timeLeft = -1;
+            if (packet.BaseStream.Length - packet.BaseStream.Position >= 3)
+            {
+                packet.ReadByte();
+                timeLeft = packet.ReadUInt16();
+            }
+            if (!_duelStarted)
+                Logger.WriteLine(Lobby("STOC_TIME_LIMIT rawPlayer=" + rawPlayer
+                    + " local=" + player + " timeLeft=" + timeLeft
+                    + (player == 0 ? ", sending CTOS_TIME_CONFIRM" : "")));
             if (player == 0)
                 Connection.Send(CtosMessage.TimeConfirm);
+        }
+
+        private string Lobby(string message)
+        {
+            return (Game.Username ?? "<null>") + " " + message;
+        }
+
+        private string ReadySummary()
+        {
+            int seats = _isTag ? 4 : 2;
+            string[] parts = new string[seats];
+            for (int i = 0; i < seats; i++)
+            {
+                string name = _room.Names[i] ?? "-";
+                string ready = _room.IsReady[i] ? "ready" : "wait";
+                string self = i == _room.Position ? "*" : "";
+                parts[i] = i + self + ":" + name + "/" + ready;
+            }
+            return "[" + string.Join(" ", parts) + "]";
+        }
+
+        private static string DescribeMode(int mode)
+        {
+            if (mode == 0)
+                return "single";
+            if (mode == 1)
+                return "match";
+            if (mode == 2)
+                return "tag";
+            return "unknown(" + mode + ")";
+        }
+
+        private static string DescribeHand(int result)
+        {
+            if (result == 1)
+                return "scissors";
+            if (result == 2)
+                return "rock";
+            if (result == 3)
+                return "paper";
+            return "unknown(" + result + ")";
+        }
+
+        private static string DescribePlayerChange(int state)
+        {
+            if (state < 8)
+                return "move to seat " + state;
+            if (state == (int)PlayerChange.Observe)
+                return "observe";
+            if (state == (int)PlayerChange.Ready)
+                return "ready";
+            if (state == (int)PlayerChange.NotReady)
+                return "not ready";
+            if (state == (int)PlayerChange.Leave)
+                return "leave";
+            return "unknown(" + state + ")";
+        }
+
+        private static string DescribeError(int msg, int code)
+        {
+            if (msg == 1)
+            {
+                if (code == 0)
+                    return "join error: cannot join host";
+                if (code == 1)
+                    return "join error: wrong password";
+                if (code == 2)
+                    return "join error: host refused";
+                return "join error: code " + code;
+            }
+            if (msg == 2)
+                return "deck error: " + DescribeDeckError(code);
+            if (msg == 3)
+                return "side error";
+            if (msg == 4)
+            {
+                int major = code >> 12;
+                int minor = (code >> 4) & 0xff;
+                int patch = code & 0xf;
+                return "version error: server " + major + "." + minor + "." + patch
+                    + " (0x" + code.ToString("X") + ")";
+            }
+            return "unknown error";
+        }
+
+        private static string DescribeDeckError(int pcode)
+        {
+            int code = pcode & 0xFFFFFFF;
+            int flag = pcode >> 28;
+            string kind;
+            if (flag == 1)
+                kind = "forbidden or limited";
+            else if (flag == 2)
+                kind = "OCG only";
+            else if (flag == 3)
+                kind = "TCG only";
+            else if (flag == 4)
+                kind = "unknown card";
+            else if (flag == 5)
+                kind = "too many copies";
+            else if (flag == 6)
+                kind = "main deck count";
+            else if (flag == 7)
+                kind = "extra deck count";
+            else if (flag == 8)
+                kind = "side deck count";
+            else if (flag == 9)
+                kind = "not available";
+            else
+                kind = "flag " + flag;
+
+            if ((flag >= 1 && flag <= 5) || flag == 9)
+            {
+                NamedCard card = NamedCard.Get(code);
+                string cardName = card != null ? card.Name : "id " + code;
+                return kind + ", card=" + cardName + " (" + code + ")";
+            }
+            return kind + ", value=" + code;
         }
 
         private void OnReplay(BinaryReader packet)
@@ -311,27 +551,35 @@ namespace WindBot.Game
         
         private void OnDuelEnd(BinaryReader packet)
         {
+            Logger.WriteLine(Lobby("STOC_DUEL_END, closing."));
             Thread.Sleep(500);
             Connection.Close();
         }
 
         private void OnChat(BinaryReader packet)
         {
-            if (Program.ServerMode) return;
+            if (Program.ServerMode && _duelStarted)
+                return;
             int player = packet.ReadUInt16();
             string message = packet.ReadUnicode(256);
+            string line;
             if (player < 4)
             {
                 int namePosition = player;
                 if (_chatPlayerOrderSwapped)
                     namePosition = _isTag ? player ^ 2 : 1 - player;
                 string playerName = _room.Names[namePosition] ?? "Player " + namePosition;
-                Logger.DebugWriteLine(playerName + " says: " + message);
+                line = playerName + " says: " + message;
             }
             else if (player == 8 || (player >= 11 && player <= 19))
-                Logger.DebugWriteLine("System message(" + player + "): " + message);
+                line = "system message(" + player + "): " + message;
             else
-                Logger.DebugWriteLine("Spectator or unknown message(" + player + "): " + message);
+                line = "spectator or unknown message(" + player + "): " + message;
+
+            if (!_duelStarted)
+                Logger.WriteLine(Lobby("chat " + line));
+            else
+                Logger.DebugWriteLine(line);
         }
 
         private void OnErrorMsg(BinaryReader packet)
@@ -342,7 +590,8 @@ namespace WindBot.Game
             packet.ReadByte();
             packet.ReadByte();
             int pcode = packet.ReadInt32();
-            Logger.DebugWriteLine("Error message received: " + msg + ", code: " + pcode);
+            Logger.WriteLine(Lobby("STOC_ERROR_MSG " + DescribeError(msg, pcode)
+                + " (msg=" + msg + ", code=" + pcode + ")"));
             if (msg == 2) //ERRMSG_DECKERROR
             {
                 int code = pcode & 0xFFFFFFF;
@@ -363,6 +612,7 @@ namespace WindBot.Game
 
         private void OnTeammateSurrender(BinaryReader packet)
         {
+            Logger.WriteLine(Lobby("teammate surrendered, sending surrender."));
             Thread.Sleep(500);
             Game.Surrender();
         }
@@ -370,8 +620,8 @@ namespace WindBot.Game
         private void OnRetry(BinaryReader packet)
         {
             _ai.OnRetry();
+            Logger.WriteErrorLine(Lobby("got MSG_RETRY, closing. Last message is " + _lastMessage));
             Connection.Close();
-            Logger.WriteErrorLine("Got MSG_RETRY. Last message is " + _lastMessage);
         }
 
         private void OnHint(BinaryReader packet)
@@ -453,13 +703,16 @@ namespace WindBot.Game
 
             if (_isTag)
             {
-                Logger.DebugWriteLine("Duel started: " + _room.Names[0] + " and " + _room.Names[1] +
-                    " versus " + _room.Names[2] + " and " + _room.Names[3]);
+                Logger.WriteLine(Lobby("duel started (" + (_duel.IsFirst ? "going first" : "going second") + "): "
+                    + _room.Names[0] + " and " + _room.Names[1]
+                    + " versus " + _room.Names[2] + " and " + _room.Names[3]));
             }
             else
             {
-                Logger.DebugWriteLine("Duel started: " + _room.Names[0] + " versus " + _room.Names[1]);
+                Logger.WriteLine(Lobby("duel started (" + (_duel.IsFirst ? "going first" : "going second") + "): "
+                    + _room.Names[0] + " versus " + _room.Names[1]));
             }
+            _duelStarted = true;
             _ai.OnStart();
         }
 

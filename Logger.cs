@@ -1,71 +1,102 @@
 ﻿using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.CompilerServices;
+using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace WindBot
 {
     public static class Logger
     {
-        private static readonly object _syncRoot = new object();
+        private const string Template =
+            "[{Timestamp:yyMMdd-HHmmss.fff}][{ShortLevel}][{SourceContext}]{Scope:l} {Message:l}{NewLine}{Exception}";
 
-        // Each server-mode bot is driven by its own worker thread, so its log context must not be shared.
-        [ThreadStatic]
-        private static Func<string> _contextProvider;
-
-        public static void SetContext(Func<string> contextProvider)
+        public static void Initialize()
         {
-            _contextProvider = contextProvider;
+            var config = new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .Enrich.With(new ShortLevelEnricher())
+                .Enrich.FromLogContext()
+                .Enrich.With(new BotNameScopeEnricher())
+                .WriteTo.Console(outputTemplate: Template);
+            Log.Logger = config.CreateLogger();
         }
 
-        public static void ClearContext()
+        public static void WriteLine(string message, [CallerFilePath] string file = "")
         {
-            _contextProvider = null;
+            ForSource(file).Information("{Text:l}", message);
         }
 
-        public static void WriteLine(string message)
-        {
-            lock (_syncRoot)
-                Console.WriteLine("[" + DateTime.Now.ToString("yy-MM-dd HH:mm:ss") + "] " + message);
-        }
-
-        public static void DebugWriteLine(string message, bool printStackTrace = false)
+        public static void DebugWriteLine(string message, bool printStackTrace = false, [CallerFilePath] string file = "")
         {
 #if DEBUG
-            lock (_syncRoot)
-            {
-                Console.WriteLine("[" + DateTime.Now.ToString("yy-MM-dd HH:mm:ss") + "] " + message);
-                if (printStackTrace)
-                    Console.WriteLine(new System.Diagnostics.StackTrace(1, true).ToString());
-            }
+            var log = ForSource(file);
+            if (printStackTrace)
+                log.Debug("{Text:l}" + Environment.NewLine + "{Stack:l}", message, new StackTrace(1, true).ToString());
+            else
+                log.Debug("{Text:l}", message);
 #endif
         }
 
-        public static void WriteErrorLine(string message)
+        public static void WriteErrorLine(string message, [CallerFilePath] string file = "")
         {
-            WriteErrorLine(message, null, new System.Diagnostics.StackTrace(1, true).ToString());
+            WriteErrorLine(message, null, new StackTrace(1, true).ToString(), file);
         }
 
-        public static void WriteErrorLine(string message, Exception exception)
+        public static void WriteErrorLine(string message, Exception exception, [CallerFilePath] string file = "")
         {
-            WriteErrorLine(message, exception, null);
+            WriteErrorLine(message, exception, null, file);
         }
 
-        private static void WriteErrorLine(string message, Exception exception, string callStack)
+        private static void WriteErrorLine(string message, Exception exception, string callStack, string file)
         {
-            lock (_syncRoot)
+            var log = ForSource(file);
+            if (exception != null)
+                log.Error(exception, "{Text:l}", message);
+            else if (!string.IsNullOrEmpty(callStack))
+                log.Error("{Text:l}" + Environment.NewLine + "Call stack:" + Environment.NewLine + "{Stack:l}", message, callStack);
+            else
+                log.Error("{Text:l}", message);
+        }
+
+        private static Serilog.ILogger ForSource(string file)
+        {
+            string source = string.IsNullOrEmpty(file)
+                ? "WindBot"
+                : Path.GetFileNameWithoutExtension(file);
+            return Log.ForContext(Constants.SourceContextPropertyName, source);
+        }
+
+        private sealed class ShortLevelEnricher : ILogEventEnricher
+        {
+            public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
             {
-                Console.BackgroundColor = ConsoleColor.Red;
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.Error.WriteLine("[" + DateTime.Now.ToString("yy-MM-dd HH:mm:ss") + "] " + message);
-                Console.ResetColor();
-
-                string context = _contextProvider?.Invoke();
-                if (!string.IsNullOrEmpty(context))
-                    Console.Error.WriteLine("Context: " + context);
-                if (exception != null)
-                    Console.Error.WriteLine(exception);
-                else if (!string.IsNullOrEmpty(callStack))
+                var level = logEvent.Level switch
                 {
-                    Console.Error.WriteLine("Call stack:");
-                    Console.Error.WriteLine(callStack);
+                    LogEventLevel.Verbose => "VERBOSE",
+                    LogEventLevel.Debug => "DEBUG",
+                    LogEventLevel.Information => "INFO",
+                    LogEventLevel.Warning => "WARNING",
+                    LogEventLevel.Error => "ERROR",
+                    LogEventLevel.Fatal => "FATAL",
+                    _ => logEvent.Level.ToString().ToUpperInvariant(),
+                };
+                logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("ShortLevel", level));
+            }
+        }
+
+        private sealed class BotNameScopeEnricher : ILogEventEnricher
+        {
+            public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
+            {
+                if (logEvent.Properties.TryGetValue("name", out var value)
+                    && value is ScalarValue scalar
+                    && scalar.Value is string name
+                    && name.Length > 0)
+                {
+                    logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("Scope", name));
                 }
             }
         }
