@@ -100,7 +100,6 @@ namespace WindBot
                 _recordCount++;
                 _dataSize += entrySize;
                 WriteHeaderUnlocked();
-                _stream.Flush(true);
             }
         }
 

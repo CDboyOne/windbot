@@ -51,6 +51,7 @@ namespace YGOSharp.Network
                 {
                     _endPoint = new IPEndPoint(address, port);
                     _socket = new Socket(_endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                    _socket.NoDelay = true;
                     _socket.BeginConnect(_endPoint, new AsyncCallback(ConnectCallback), null);
                 }
                 catch (Exception ex)
